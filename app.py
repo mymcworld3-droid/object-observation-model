@@ -1,6 +1,7 @@
 import os
 from flask import Flask
 
+# 將靜態資料夾設為根目錄，並停用預設的 static 網址首綴
 app = Flask(__name__, static_folder='.', static_url_path='')
 
 @app.route('/')
