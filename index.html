@@ -12,6 +12,7 @@
         button { background: #ff9800; color: black; border: none; padding: 12px 24px; font-size: 16px; cursor: pointer; border-radius: 4px; font-weight: bold; margin: 5px; }
         button:disabled { background: #555; color: #aaa; cursor: not-allowed; }
         #clearBtn { background: #f44336; color: white; }
+        #prevBtn, #nextBtn { background: #2196f3; color: white; }
         #status { margin: 15px; color: #ffff00; font-size: 14px; }
         #log-area { width: 80%; max-width: 600px; height: 120px; margin: 20px auto; background: #000; color: #00ff00; border: 1px solid #333; padding: 10px; font-size: 12px; text-align: left; overflow-y: auto; white-space: pre-wrap; }
     </style>
@@ -19,15 +20,21 @@
 <body>
 
     <h1>🤖 Surviv.IO AI 資料標註工作站</h1>
-    <p>【平板專用】選擇截圖 ➔ 點擊左上 ➔ 點擊右下 ➔ 導出結果</p>
+    <p>【平板多圖版】選擇多張截圖 ➔ 點擊左上 ➔ 點擊右下 ➔ 切換或導出結果</p>
     
-    <input type="file" id="upload" accept="image/*" style="margin: 10px;"><br>
+    <input type="file" id="upload" accept="image/*" multiple style="margin: 10px;"><br>
     
+    <div class="btn-group">
+        <button id="prevBtn" disabled>⬅ 上一張</button>
+        <span id="pageIndicator" style="color: #00ffff; margin: 0 10px;">圖片庫：0 / 0</span>
+        <button id="nextBtn" disabled>下一張 ➡</button>
+    </div>
+
     <div id="canvas-container">
         <canvas id="labelCanvas"></canvas>
     </div>
 
-    <div id="status">請先選擇並上傳一張遊戲截圖。</div>
+    <div id="status">請先選擇並上傳一張或多張遊戲截圖。</div>
 
     <div class="btn-group">
         <button id="exportYoloBtn" disabled>輸出 YOLO 格式 (.txt)</button>
@@ -42,40 +49,73 @@
         const upload = document.getElementById('upload');
         const canvas = document.getElementById('labelCanvas');
         const ctx = canvas.getContext('2d');
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+        const pageIndicator = document.getElementById('pageIndicator');
         const exportYoloBtn = document.getElementById('exportYoloBtn');
         const exportJsonBtn = document.getElementById('exportJsonBtn');
         const statusDiv = document.getElementById('status');
         const logArea = document.getElementById('log-area');
 
+        let imageList = []; // 存放所有選取圖片的陣列
+        let currentIdx = -1; // 當前正在標註的圖片索引
         let img = new Image();
         let fileName = "surviv_capture";
         let clicks = [];
-        let boxes = [];
+        
+        //🔥 結構優化：將標註矩陣 boxes 綁定到各自的圖片物件中，切換時資料不遺失
+        // 格式：imageList[i].boxes = [...]
 
-        // 載入圖片檔案
+        // 載入多張圖片檔案
         upload.addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
+            const files = e.target.files;
+            if (!files || files.length === 0) return;
             
-            fileName = file.name.split('.').slice(0, -1).join('.');
+            imageList = [];
+            currentIdx = 0;
+
+            // 將所有檔案轉換為可讀取結構
+            for (let i = 0; i < files.length; i++) {
+                imageList.push({
+                    file: files[i],
+                    name: files[i].name.split('.').slice(0, -1).join('.'),
+                    src: "",
+                    boxes: [] // 獨立儲存每張圖的標註結果
+                });
+            }
+
+            loadImageAtIndex(currentIdx);
+        });
+
+        // 核心函式：載入指定索引的圖片並重繪畫布
+        function loadImageAtIndex(index) {
+            if (index < 0 || index >= imageList.length) return;
+            
+            //🔥 確保下一格完全擦除：在讀取新圖前，徹底清空畫布與點擊快取
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            clicks = [];
+            
+            const currentItem = imageList[index];
+            fileName = currentItem.name;
+
             const reader = new FileReader();
             reader.onload = (event) => {
-                img.src = event.target.result;
+                currentItem.src = event.target.result;
+                img.src = currentItem.src;
                 img.onload = () => {
                     canvas.width = img.width;
                     canvas.height = img.height;
                     redrawCanvas();
-                    clicks = [];
-                    boxes = [];
-                    updateUI("圖片載入成功！請點擊第一下（鎖定目標左上角）");
+                    updateNavigationUI();
+                    updateUI(`圖片 [${index + 1}] 載入成功！請點擊第一下（鎖定目標左上角）`);
                 };
             };
-            reader.readAsDataURL(file);
-        });
+            reader.readAsDataURL(currentItem.file);
+        }
 
         // 平板專用：無拖曳兩點成框
         canvas.addEventListener('click', (e) => {
-            if (!img.src) return;
+            if (currentIdx === -1 || !img.src) return;
 
             const rect = canvas.getBoundingClientRect();
             const x = Math.round((e.clientX - rect.left) * (canvas.width / rect.width));
@@ -97,22 +137,28 @@
                     y2: Math.max(p1.y, p2.y)
                 };
                 
-                boxes.push(box);
+                // 將標註推入當前圖片的獨立專屬陣列中
+                imageList[currentIdx].boxes.push(box);
                 clicks = []; // 清空點擊暫存
                 
                 redrawCanvas();
-                updateUI(`成功標記物件！當前畫面上已捕捉 ${boxes.length} 個目標。`);
+                updateUI(`成功標記物件！當前圖片已捕捉 ${imageList[currentIdx].boxes.length} 個目標。`);
             }
         });
 
         function redrawCanvas() {
+            if (currentIdx === -1) return;
+            
+            //🔥 完美重繪：先擦除全畫布，再疊加背景與最新矩陣
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(img, 0, 0);
+            
+            const currentBoxes = imageList[currentIdx].boxes;
             
             // 繪製紅色的標註邊框
             ctx.strokeStyle = '#ff0000';
             ctx.lineWidth = 4;
-            boxes.forEach((b, index) => {
+            currentBoxes.forEach((b, index) => {
                 ctx.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
                 // 畫上編號
                 ctx.fillStyle = '#ff0000';
@@ -123,38 +169,67 @@
             updateLogArea();
         }
 
+        // 更新上一張、下一張按鈕的可用狀態
+        function updateNavigationUI() {
+            if (imageList.length <= 1) {
+                prevBtn.disabled = true;
+                nextBtn.disabled = true;
+                pageIndicator.innerText = `圖片庫：${imageList.length ? 1 : 0} / ${imageList.length}`;
+                return;
+            }
+            
+            prevBtn.disabled = (currentIdx === 0);
+            nextBtn.disabled = (currentIdx === imageList.length - 1);
+            pageIndicator.innerText = `圖片庫：${currentIdx + 1} / ${imageList.length}`;
+        }
+
+        // 上一張按鈕觸發
+        prevBtn.addEventListener('click', () => {
+            if (currentIdx > 0) {
+                currentIdx--;
+                loadImageAtIndex(currentIdx);
+            }
+        });
+
+        // 下一張按鈕觸發
+        nextBtn.addEventListener('click', () => {
+            if (currentIdx < imageList.length - 1) {
+                currentIdx++;
+                loadImageAtIndex(currentIdx);
+            }
+        });
+
         function updateUI(statusText) {
             statusDiv.innerText = statusText;
-            const hasBoxes = boxes.length > 0;
+            const hasBoxes = currentIdx !== -1 && imageList[currentIdx].boxes.length > 0;
             exportYoloBtn.disabled = !hasBoxes;
             exportJsonBtn.disabled = !hasBoxes;
         }
 
         function resetLabels() {
             clicks = [];
-            boxes = [];
-            if (img.src) {
+            if (currentIdx !== -1 && img.src) {
+                imageList[currentIdx].boxes = [];
                 redrawCanvas();
-                updateUI("已清空當前標註。請重新點擊左上角開始。");
+                updateUI("已清空當前圖片標註。請重新點擊左上角開始。");
             }
         }
 
         // 轉換並更新預覽文字欄
         function updateLogArea() {
-            if (boxes.length === 0) {
+            if (currentIdx === -1 || imageList[currentIdx].boxes.length === 0) {
                 logArea.innerText = "暫無標註數據。";
                 return;
             }
             
-            let logText = "=== YOLO 標準格式歸一化數據預覽 ===\n";
-            boxes.forEach(b => {
+            let logText = "=== 當前圖片 YOLO 標準格式數據預覽 ===\n";
+            imageList[currentIdx].boxes.forEach(b => {
                 const yolo = convertToYolo(b);
                 logText += `${yolo.classId} ${yolo.cx.toFixed(6)} ${yolo.cy.toFixed(6)} ${yolo.w.toFixed(6)} ${yolo.h.toFixed(6)}\n`;
             });
             logArea.innerText = logText;
         }
 
-        // 將絕對像素座標轉換成 AI 訓練通用的 0.0 ~ 1.0 歸一化比例 (YOLO標準格式)
         function convertToYolo(box) {
             const dw = 1.0 / canvas.width;
             const dh = 1.0 / canvas.height;
@@ -165,22 +240,24 @@
             return { classId: box.classId, cx, cy, w, h };
         }
 
-        //🔥 觸發輸出 1：輸出標準 YOLO 文字檔 (.txt)
+        // 觸發輸出 1：輸出當前圖片的標準 YOLO 文字檔 (.txt)
         exportYoloBtn.addEventListener('click', () => {
+            if (currentIdx === -1) return;
             let outputLines = [];
-            boxes.forEach(b => {
+            imageList[currentIdx].boxes.forEach(b => {
                 const y = convertToYolo(b);
                 outputLines.push(`${y.classId} ${y.cx.toFixed(6)} ${y.cy.toFixed(6)} ${y.w.toFixed(6)} ${y.h.toFixed(6)}`);
             });
             downloadFile(outputLines.join('\n'), `${fileName}.txt`, 'text/plain');
         });
 
-        //🔥 觸發輸出 2：輸出網頁原生 JSON 座標檔
+        // 觸發輸出 2：輸出當前圖片的網頁原生 JSON 座標檔
         exportJsonBtn.addEventListener('click', () => {
+            if (currentIdx === -1) return;
             const dataObj = {
                 imageName: `${fileName}.jpg`,
                 dimensions: { width: canvas.width, height: canvas.height },
-                targets: boxes
+                targets: imageList[currentIdx].boxes
             };
             downloadFile(JSON.stringify(dataObj, null, 4), `${fileName}_labels.json`, 'application/json');
         });
