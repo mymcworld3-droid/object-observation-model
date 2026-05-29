@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Surviv AI 自製訓練工廠</title>
+    <style>
+        body { font-family: monospace; background: #121212; color: #00ff00; padding: 20px; text-align: center; }
+        #canvas-container { position: relative; margin: 20px auto; display: inline-block; border: 2px solid #00ffff; }
+        canvas { display: block; max-width: 100%; }
+        button { background: #ff5722; color: white; border: none; padding: 12px 24px; font-size: 16px; cursor: pointer; border-radius: 4px; font-weight: bold; }
+        button:disabled { background: #555; color: #aaa; }
+        #status { margin: 15px; color: #ffff00; }
+    </style>
+</head>
+<body>
+
+    <h1>🤖 Surviv.IO AI 訓練工作台</h1>
+    <input type="file" id="upload" accept="image/*" style="margin: 20px;"><br>
+    
+    <div id="canvas-container">
+        <canvas id="paintCanvas"></canvas>
+    </div>
+
+    <div id="status">請上傳遊戲截圖，並在畫面上點擊兩下框出目標。</div>
+    <button id="trainBtn" disabled>傳送至 Render 開始訓練</button>
+
+    <script>
+        const upload = document.getElementById('upload');
+        const canvas = document.getElementById('paintCanvas');
+        const ctx = canvas.getContext('2d');
+        const trainBtn = document.getElementById('trainBtn');
+        const statusDiv = document.getElementById('status');
+
+        let img = new Image();
+        let clicks = [];
+        let boxes = [];
+
+        upload.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                img.src = event.target.result;
+                img.onload = () => {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                    clicks = [];
+                    boxes = [];
+                    statusDiv.innerText = "圖片載入成功！請點擊第一下（左上角）";
+                };
+            };
+            reader.readAsDataURL(file);
+        });
+
+        //🔥 平板專用：點擊兩下成框邏輯
+        canvas.addEventListener('click', (e) => {
+            if (!img.src) return;
+
+            const rect = canvas.getBoundingClientRect();
+            // 換算成圖片原始解析度座標
+            const x = Math.round((e.clientX - rect.left) * (canvas.width / rect.width));
+            const y = Math.round((e.clientY - rect.top) * (canvas.height / rect.height));
+
+            clicks.push({ x, y });
+
+            if (clicks.length === 1) {
+                statusDiv.innerText = "已記錄左上角，請點擊第二下（右下角）";
+            } else if (clicks.length === 2) {
+                const p1 = clicks[0];
+                const p2 = clicks[1];
+                
+                // 計算正方形方框
+                const box = {
+                    x1: Math.min(p1.x, p2.x),
+                    y1: Math.min(p1.y, p2.y),
+                    x2: Math.max(p1.x, p2.x),
+                    y2: Math.max(p1.y, p2.y)
+                };
+                
+                boxes.push(box);
+                clicks = []; // 重置點擊計數
+                
+                //🔥 重新繪製畫面與新方框
+                ctx.drawImage(img, 0, 0);
+                ctx.strokeStyle = '#ff0000';
+                ctx.lineWidth = 5;
+                boxes.forEach(b => {
+                    ctx.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+                });
+
+                statusDiv.innerText = `成功標記目標！目前已標記 ${boxes.length} 個物件。`;
+                trainBtn.disabled = false;
+            }
+        });
+
+        // 將資料發送給 Render 後端
+        trainBtn.addEventListener('click', () => {
+            statusDiv.innerText = "正在傳送資料至 Render 後端伺服器並啟動 TensorFlow 訓練...";
+            trainBtn.disabled = true;
+
+            fetch('/api/train', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: img.src, annotations: boxes })
+            })
+            .then(res => res.blob())
+            .then(blob => {
+                statusDiv.innerText = "🎉 訓練完成！已成功下載專屬 AI 模型 (surviv_model.tflite)！";
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'surviv_model.tflite';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            })
+            .catch(err => {
+                statusDiv.innerText = "伺服器訓練失敗: " + err.message;
+                trainBtn.disabled = false;
+            });
+        });
+    </script>
+</body>
+</html>
